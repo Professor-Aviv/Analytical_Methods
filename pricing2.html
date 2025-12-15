@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Two-Price Optimization</title>
+    <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 30px;
+        }
+
+        textarea {
+            width: 100%;
+            height: 220px;
+            font-family: Consolas, monospace;
+            font-size: 14px;
+            padding: 10px;
+        }
+
+        button {
+            margin-top: 12px;
+            padding: 8px 16px;
+        }
+
+        pre {
+            background: #f4f4f4;
+            padding: 12px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h3>Paste WTP Data (with headers)</h3>
+
+    <textarea id="wtpInput"></textarea>
+    <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            const saved = localStorage.getItem("wtp_input");
+            if (saved) {
+                document.getElementById("wtpInput").value = saved;
+            }
+        });
+    </script>
+
+    <br>
+    <button onclick="runOptimization()">Run Optimization</button>
+
+    <h4>Result</h4>
+    <pre id="output"></pre>
+
+    <h4>Revenue Heatmap</h4>
+    <div
+        style="padding: 16px 20px; border-radius: 14px; border: 3px solid #1f3a8a; background: #e0ce92; color: #1a1a1a; font-family: Arial, sans-serif;">
+        <div id="heatmap" style="width:700px;height:600px;"></div>
+    </div>
+
+    <script>
+        function runOptimization() {
+            localStorage.setItem("wtp_input", document.getElementById("wtpInput").value);
+
+
+            // ============================
+            // ABSOLUTELY ROBUST PARSING
+            // ============================
+            const raw = document.getElementById("wtpInput").value;
+            console.log("RAW INPUT:", raw);
+
+            const lines = raw.split(/\r?\n/);
+            const wtp_data = [];
+
+            for (let line of lines) {
+                // extract ALL numbers from the line
+                const nums = line.match(/-?\d+(\.\d+)?/g);
+                if (nums && nums.length >= 2) {
+                    const wtp = Number(nums[0]);
+                    const consumers = Number(nums[1]);
+                    wtp_data.push([wtp, consumers]);
+                }
+            }
+
+            console.log("PARSED WTP DATA:", wtp_data);
+
+            if (wtp_data.length === 0) {
+                alert("No valid WTP data parsed.");
+                return;
+            }
+
+            // ============================
+            // PARAMETERS
+            // ============================
+            const Q = 100;
+            const x_values = [];
+            for (let x = 5; x <= 120; x += 5) x_values.push(x);
+
+            // ============================
+            // REVENUE FUNCTION (CORRECT)
+            // ============================
+            function revenue(x1, x2) {
+
+                const demand1 = wtp_data
+                    .filter(([p, _]) => p >= x1)
+                    .reduce((s, [_, N]) => s + N, 0);
+
+                const sales1 = Math.min(demand1, Q);
+
+                const demand2 = wtp_data
+                    .filter(([p, _]) => p >= x2 && p < x1)
+                    .reduce((s, [_, N]) => s + N, 0);
+
+                const sales2 = Math.min(demand2, Q - sales1);
+
+                return sales1 * x1 + sales2 * x2;
+            }
+
+            function feasible(x1, x2) {
+                return (x2 <= x1) && (x2 >= x1 - 10);
+            }
+
+            // ============================
+            // EXHAUSTIVE SEARCH + HEATMAP
+            // ============================
+            let best_value = -Infinity;
+            let best_x1 = null;
+            let best_x2 = null;
+
+            const revenues = [];
+            let maxRevenue = 0;
+
+            for (let i = 0; i < x_values.length; i++) {
+                revenues[i] = [];
+                for (let j = 0; j < x_values.length; j++) {
+                    const x1 = x_values[i];
+                    const x2 = x_values[j];
+
+                    let val = NaN;
+                    if (feasible(x1, x2)) {
+                        val = revenue(x1, x2);
+                        if (val > best_value) {
+                            best_value = val;
+                            best_x1 = x1;
+                            best_x2 = x2;
+                        }
+                        maxRevenue = Math.max(maxRevenue, val);
+                    }
+                    revenues[i][j] = val;
+                }
+            }
+
+            // ============================
+            // PLOTLY HEATMAP
+            // ============================
+            const z = revenues[0].map((_, j) =>
+                revenues.map(row => isNaN(row[j]) ? null : row[j])
+            );
+
+            const trace = {
+                z: z,
+                x: x_values,
+                y: x_values,
+                type: "heatmap",
+                colorscale: [[0, "red"], [1, "blue"]],
+                colorbar: { title: "Revenue" }
+            };
+
+            const layout = {
+                title: "Revenue Heatmap",
+                plot_bgcolor: "#e0ce92",
+                paper_bgcolor: "#e0ce92",
+                xaxis: {
+                    title: "p1",
+                    showgrid: true,
+                    gridcolor: "rgba(0,0,0,0.15)",
+                    gridwidth: 1,
+                    tickmode: "array",      // keep sparse labels
+                    tickvals: x_values.filter((_, i) => i % 1 === 0)
+                },
+                yaxis: {
+                    title: "p2",
+                    showgrid: true,
+                    gridcolor: "rgba(0,0,0,0.15)",
+                    gridwidth: 1,
+                    tickmode: "array",
+                    tickvals: x_values.filter((_, i) => i % 1 === 0)
+                }
+            };
+
+            const optimalPoint = {
+                x: [best_x1],
+                y: [best_x2],
+                mode: "markers",
+                type: "scatter",
+                marker: {
+                    color: "white",
+                    size: 12,
+                    symbol: "circle",
+                    line: {
+                        color: "black",
+                        width: 2
+                    }
+                },
+                name: "Optimal solution"
+            };
+
+            Plotly.newPlot("heatmap", [trace, optimalPoint], layout);
+
+            document.getElementById("output").textContent =
+                `Optimal prices:
+p1 = $${best_x1.toFixed(2)}
+p2 = $${best_x2.toFixed(2)}
+
+Optimal revenue = $${best_value.toFixed(2)}`;
+        }
+    </script>
+
+</body>
+
+</html>
